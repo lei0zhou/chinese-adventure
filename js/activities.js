@@ -9,7 +9,7 @@
   const backLink = scope => '<a class="back" href="' + (scope && scope !== 'all' ? '#/unit/' + scope : '#/') + '">← ' + (scope && scope !== 'all' ? App.unitById[scope].city.en : 'Map') + '</a>';
   const header = (scope, ico, title, zh) => backLink(scope) + '<h1>' + ico + ' ' + title + ' <span class="sub">' + zh + '</span></h1>';
   const progress = (i, n) => '<div class="progress" aria-label="Progress"><i style="width:' + Math.round(100 * i / n) + '%"></i></div>';
-  const voiceBanner = () => App.canSpeak() ? '' : '<div class="banner">🔇 No Chinese voice was found on this device, so audio is off. You can still play using pinyin. (A grown-up can add a Chinese voice: see 👪 Grown-ups.)</div>';
+  const voiceBanner = () => App.canSpeak() ? '' : '<div class="banner">🔇 Chinese audio isn’t available right now (the recordings didn’t load and this device has no Chinese voice). You can still play using pinyin. Try reloading the page, or see 👪 Grown-ups › Voice.</div>';
 
   function distractors(w, n, field, pool) {
     pool = (pool && pool.length > 8 ? pool : C.words).filter(x => x.id !== w.id && x[field] !== w[field] && x.hz !== w.hz);
@@ -21,7 +21,7 @@
   /** Build a multiple-choice question about word w. type: hz2en | en2hz | py2hz | listen | tone */
   function makeQ(w, type, pool, opts) {
     opts = opts || {};
-    if (type === 'listen' && !App.canSpeak()) type = 'py2hz';
+    if (type === 'listen' && !App.canSpeak(w.hz)) type = 'py2hz';
     if (type === 'tone' && !(w.hz.length === 1 && App.toneOf(w.py))) type = 'hz2en';
     const q = { word: w, type };
     if (type === 'tone') {
@@ -522,7 +522,7 @@
         for (let j = 0; j < d.lines.length; j++) {
           idx = j; mark();
           const l = d.lines[j], take = l.who === me && App.takes[keyOf(j)];
-          if (take) await playBlob(take); else await App.say(lineText(l), { quiet: true });
+          if (take) await playBlob(take); else if ((await App.say(lineText(l), { quiet: true })) === null) break;
           await new Promise(r => setTimeout(r, 250));
         }
         idx = d.lines.length; mark();

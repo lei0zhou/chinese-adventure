@@ -16,7 +16,7 @@ const page = await ctx.newPage();
 const errs = [];
 page.on('console', m => { if (m.type() === 'error' || m.type() === 'warn' || m.type() === 'warning') errs.push(m.type() + ': ' + m.text()); });
 page.on('pageerror', e => errs.push('pageerror: ' + e.message));
-page.on('requestfailed', r => { if (!offlineCmd || !r.url().includes('favicon')) errs.push('requestfailed: ' + r.url() + ' ' + (r.failure() || {}).errorText); });
+page.on('requestfailed', r => { if (/\/audio\/[^/]+\.mp3$/.test(r.url()) && /ERR_ABORTED/.test((r.failure() || {}).errorText || '')) return; /* a clip cut off by the next one */ if (!offlineCmd || !r.url().includes('favicon')) errs.push('requestfailed: ' + r.url() + ' ' + (r.failure() || {}).errorText); });
 const external = []; page.on('request', r => { const u = new URL(r.url()); if (!['127.0.0.1', 'localhost', new URL(base).hostname].includes(u.hostname) && !u.protocol.startsWith('data') && !u.protocol.startsWith('blob')) external.push(r.url()); });
 await page.setViewport({ width: 1280, height: 800 });
 const shot = async name => { if (shots) await page.screenshot({ path: shots + '/' + name + '.png' }); };

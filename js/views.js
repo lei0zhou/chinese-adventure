@@ -27,8 +27,10 @@
     bar.innerHTML =
       '<span class="pill" title="Stars">⭐ ' + p.stars + '</span>' +
       '<span class="pill" title="Days in a row">🔥 ' + (p.streak.last >= App.today() - 1 ? p.streak.count : 0) + '</span>' +
+      '<button class="iconbtn" id="voiceBtn" aria-label="Voice settings" title="Voice: ' + esc((App.VOICE_MODES.find(m => m.k === App.voicePrefs().mode) || {}).name || '') + (App.voicePrefs().speed === 'slow' ? ', slow' : '') + '">' + (App.voicePrefs().speed === 'slow' ? '🐢' : '🔊') + '</button>' +
       '<button class="iconbtn" id="whoBtn" aria-label="Switch explorer" title="Switch explorer">' + esc(p.avatar) + '</button>';
     App.$('#whoBtn').onclick = () => { location.hash = '#/who'; };
+    App.$('#voiceBtn').onclick = () => App.openVoicePanel();
   };
 
   /* ---------- home ---------- */
@@ -152,8 +154,9 @@
       return;
     }
     const s = App.state.settings, p = App.profile();
-    const voiceInfo = App.voice ? '✅ Chinese voice found: <b>' + esc(App.voice.name) + '</b> (' + esc(App.voice.lang) + (App.voice.localService ? ', on-device' : ', may need internet') + ')' :
-      '⚠️ No Chinese (zh-CN) voice found. Activities still work with pinyin, but you won’t hear audio. To add one: <b>iPad/iPhone</b> Settings › Accessibility › Spoken Content › Voices › Chinese; <b>Android</b> Settings › Text-to-speech › install Chinese; <b>Windows</b> Settings › Time & Language › Speech › add Chinese; <b>Mac</b> System Settings › Accessibility › Spoken Content › System voice › Manage Voices.';
+    const deviceHelp = App.zhVoices.length ? '' : '<p class="sub" style="font-size:.85rem">No Chinese text-to-speech voice was found on this device (that’s fine: the recorded voice works everywhere). To add one for “Device voice”: <b>iPad/iPhone</b> Settings › Accessibility › Spoken Content › Voices › Chinese; <b>Android</b> Settings › Text-to-speech › install Chinese; <b>Windows</b> Settings › Time & Language › Speech › add Chinese; <b>Mac</b> System Settings › Accessibility › Spoken Content › System voice › Manage Voices.</p>';
+    const ai = App.audioInfo;
+    const audioInfo = ai ? '<p class="sub" style="font-size:.85rem">Recorded voice: ' + (ai.count || Object.keys(App.clips || {}).length) + ' clips' + (ai.bytes ? ' (' + (ai.bytes / 1048576).toFixed(1) + ' MB)' : '') + ', made with ' + esc(ai.engine || 'an open-source voice') + '. <span id="offAudio"></span></p>' : '';
     const rows = C.units.map(u => {
       const st = App.ACTS.reduce((n, a) => n + (p.best[u.id + ':' + a.k] || 0), 0);
       const learned = App.unitWords(u.id).filter(w => (p.srs[w.id] || {}).b >= 2).length;
@@ -167,8 +170,8 @@
       '<label class="row"><input type="checkbox" id="sTone" ' + (s.toneColors ? 'checked' : '') + '> Color pinyin by tone (1 red · 2 green · 3 blue · 4 purple)</label>' +
       '<label class="row"><input type="checkbox" id="sUnlock" ' + (s.unlockAll ? 'checked' : '') + '> Unlock all cities</label>' +
       '<label class="row"><input type="checkbox" id="sKeep" ' + (s.keepRecordings ? 'checked' : '') + '> Keep role-play recordings on this device (IndexedDB) between visits</label>' +
-      '<label>Speech speed: <input type="range" id="sRate" min="0.5" max="1.1" step="0.1" value="' + s.rate + '"> <span id="rateV">' + s.rate + '</span></label>' +
-      '<p class="banner">' + voiceInfo + '</p><button class="btn secondary small" data-say="你好！我们一起学中文吧！">🔊 Test voice</button></div>' +
+      '</div><div class="card mb"><h2>🔊 Voice <small class="sub">(saved for ' + esc(p.name) + ')</small></h2><div id="voiceCard">' + App.voiceControlsHTML() + '</div>' +
+      '<label class="mt" style="display:block">Device voice speed: <input type="range" id="sRate" min="0.5" max="1.1" step="0.1" value="' + s.rate + '"> <span id="rateV">' + s.rate + '</span></label>' + audioInfo + deviceHelp + '</div>' +
       '<div class="card mb"><h2>Progress file</h2><p class="sub">Save progress to a file, or move it to another device.</p><div class="row">' +
       '<button class="btn small" id="exp">⬇️ Export JSON</button><label class="btn secondary small" style="cursor:pointer">⬆️ Import JSON<input type="file" id="imp" accept="application/json,.json" class="hidden"></label></div></div>' +
       '<div class="card"><h2>Reset</h2><div class="row"><button class="btn red small" id="rst">Reset ' + esc(p.name) + '’s progress</button>' +
@@ -179,6 +182,13 @@
     App.$('#sTone', root).onchange = e => { set('toneColors', e.target.checked); document.body.classList.toggle('tc', e.target.checked); };
     App.$('#sUnlock', root).onchange = e => set('unlockAll', e.target.checked);
     App.$('#sKeep', root).onchange = e => set('keepRecordings', e.target.checked);
+    const drawVoice = () => { const vc = App.$('#voiceCard', root); if (!vc) return; vc.innerHTML = App.voiceControlsHTML(); App.bindVoiceControls(vc, drawVoice); App.renderTop(); };
+    App.bindVoiceControls(App.$('#voiceCard', root), drawVoice);
+    const onVoices = () => drawVoice(); document.addEventListener('voices', onVoices); App.cleanup.push(() => document.removeEventListener('voices', onVoices));
+    if (window.caches && App.audioInfo) caches.keys().then(ks => Promise.all(ks.filter(k => k.startsWith('panda-passport-')).map(k => caches.open(k).then(c => c.keys())))).then(lists => {
+      const n = new Set(lists.flat().map(r => r.url).filter(u => /\/audio\/[^/]+\.mp3$/.test(u))).size, el = App.$('#offAudio', root);
+      if (el) el.textContent = n >= (App.audioInfo.count || 1) ? '✅ All saved for offline use.' : n ? '⏳ ' + n + ' saved for offline so far (the rest download in the background).' : '';
+    }).catch(() => {});
     App.$('#sRate', root).oninput = e => { set('rate', +e.target.value); App.$('#rateV', root).textContent = e.target.value; };
     App.$('#exp', root).onclick = () => {
       const blob = new Blob([App.exportJSON()], { type: 'application/json' });
@@ -203,7 +213,7 @@
   App.cleanup = [];
   App.route = () => {
     App.cleanup.forEach(f => { try { f(); } catch (e) { } }); App.cleanup = [];
-    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    App.stopSpeech();
     App.$$('.confetti, .popup').forEach(n => n.remove());
     const root = App.$('#app');
     const parts = (location.hash || '#/').replace(/^#\/?/, '').split('/').filter(Boolean);
@@ -228,7 +238,7 @@
     App.load(); App.initVoices();
     document.body.classList.toggle('tc', App.state.settings.toneColors);
     window.addEventListener('hashchange', App.route);
-    App.route();
+    App.initAudio().then(() => App.route());
     const net = () => { const d = App.$('#netdot'); if (d) { d.style.background = navigator.onLine ? 'var(--green)' : 'var(--orange)'; d.title = navigator.onLine ? 'Online' : 'Offline mode: everything still works'; } };
     window.addEventListener('online', net); window.addEventListener('offline', net); net();
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {

@@ -21,7 +21,7 @@
   const MARKS = { 'ā': 1, 'á': 2, 'ǎ': 3, 'à': 4, 'ē': 1, 'é': 2, 'ě': 3, 'è': 4, 'ī': 1, 'í': 2, 'ǐ': 3, 'ì': 4, 'ō': 1, 'ó': 2, 'ǒ': 3, 'ò': 4, 'ū': 1, 'ú': 2, 'ǔ': 3, 'ù': 4, 'ǖ': 1, 'ǘ': 2, 'ǚ': 3, 'ǜ': 4 };
   const BASE = { 'ā': 'a', 'á': 'a', 'ǎ': 'a', 'à': 'a', 'ē': 'e', 'é': 'e', 'ě': 'e', 'è': 'e', 'ī': 'i', 'í': 'i', 'ǐ': 'i', 'ì': 'i', 'ō': 'o', 'ó': 'o', 'ǒ': 'o', 'ò': 'o', 'ū': 'u', 'ú': 'u', 'ǔ': 'u', 'ù': 'u', 'ǖ': 'ü', 'ǘ': 'ü', 'ǚ': 'ü', 'ǜ': 'ü' };
   const V = 'aeiouüāáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜAEIOUĀÁǍÀĒÉĚÈĪÍǏÌŌÓǑÒŪÚǓÙ';
-  const SYL = new RegExp('(?:zh|ch|sh|[bpmfdtnlgkhjqxrzcsywBPMFDTNLGKHJQXRZCSYW])?[' + V + ']+(?:ng|n(?![' + V + '])|r(?![' + V + ']))?', 'g');
+  const SYL = new RegExp('(?:zh|ch|sh|[bpmfdtnlgkhjqxrzcsywBPMFDTNLGKHJQXRZCSYW])?[' + V + ']+(?:ng(?![' + V + '])|n(?![' + V + '])|r(?![' + V + ']))?', 'g');
   App.toneOf = s => { for (const ch of s.toLowerCase()) if (MARKS[ch]) return MARKS[ch]; return 0; };
   App.stripTone = s => s.replace(/[āáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜ]/g, c => BASE[c]).replace(/[ĀÁǍÀ]/g, 'A').replace(/[ĒÉĚÈ]/g, 'E').replace(/[ĪÍǏÌ]/g, 'I').replace(/[ŌÓǑÒ]/g, 'O').replace(/[ŪÚǓÙ]/g, 'U');
   App.syllables = py => (py.match(SYL) || []);
@@ -65,7 +65,7 @@
   App.save = () => { try { localStorage.setItem(KEY, JSON.stringify(App.state)); } catch (e) { console.warn('save failed', e); } };
   App.profile = () => App.state.profiles[App.state.current] || null;
   App.addProfile = (name, avatar) => { const p = newProfile(name, avatar); App.state.profiles[p.id] = p; App.state.current = p.id; App.save(); return p; };
-  App.resetProfile = id => { const p = App.state.profiles[id]; if (!p) return; const n = newProfile(p.name, p.avatar); n.id = p.id; App.state.profiles[id] = n; App.save(); };
+  App.resetProfile = id => { const p = App.state.profiles[id]; if (!p) return; const n = newProfile(p.name, p.avatar); n.id = p.id; if (p.voice) n.voice = p.voice; App.state.profiles[id] = n; App.save(); };
   App.exportJSON = () => JSON.stringify({ app: 'panda-passport', exported: new Date().toISOString(), state: App.state }, null, 2);
   App.importJSON = text => {
     const obj = JSON.parse(text);
@@ -203,38 +203,167 @@
     } catch (e) { /* audio not available */ }
   };
 
-  /* ---------- speech (on-device Web Speech voices only) ---------- */
-  App.voice = null;
-  function pickVoice() {
-    if (!('speechSynthesis' in window)) return null;
-    const vs = speechSynthesis.getVoices();
-    const zh = vs.filter(v => /^(zh|cmn)([-_](CN|Hans|SG)|$)/i.test(v.lang) || /^zh-CN$/i.test(v.lang));
-    const any = zh.length ? zh : vs.filter(v => /^zh/i.test(v.lang) && !/HK|yue/i.test(v.lang));
-    // Prefer voices that work offline (localService); then mainland Mandarin.
-    any.sort((a, b) => (b.localService - a.localService) || (/CN/i.test(b.lang) - /CN/i.test(a.lang)));
-    return any[0] || null;
+  /* ---------- speech: bundled recordings (audio/*.mp3) + optional on-device Web Speech voice ---------- */
+  // Voice modes (saved per explorer): 'recorded' = bundled clips only (default),
+  // 'device' = the device's Chinese text-to-speech voice (falls back to clips if there is none),
+  // 'auto' = bundled clips, falling back to the device voice when a clip is missing or fails.
+  App.VOICE_MODES = [
+    { k: 'recorded', name: 'Recorded voice', desc: 'Built-in recordings. Works on every device, even offline.' },
+    { k: 'device', name: 'Device voice', desc: 'Your device’s own Chinese text-to-speech voice.' },
+    { k: 'auto', name: 'Auto', desc: 'Recordings first; the device voice fills any gaps.' },
+  ];
+  App.voice = null; App.zhVoices = [];
+  App.clips = null; App.audioInfo = null;
+  const isZh = v => /^(zh|cmn)([-_](CN|Hans|SG|TW|Hant)|$)/i.test(v.lang) && !/HK|yue/i.test(v.lang);
+  function listVoices() {
+    if (!('speechSynthesis' in window)) return [];
+    const zh = speechSynthesis.getVoices().filter(isZh);
+    // Prefer on-device voices, then mainland Mandarin.
+    zh.sort((a, b) => (b.localService - a.localService) || (/CN|Hans/i.test(b.lang) - /CN|Hans/i.test(a.lang)) || a.name.localeCompare(b.name));
+    return zh;
   }
-  App.initVoices = () => {
-    App.voice = pickVoice();
-    if ('speechSynthesis' in window) speechSynthesis.addEventListener('voiceschanged', () => { App.voice = pickVoice(); document.dispatchEvent(new Event('voices')); });
+  function pickVoice() {
+    App.zhVoices = listVoices();
+    const want = App.voicePrefs().uri;
+    App.voice = App.zhVoices.find(v => v.voiceURI === want) || App.zhVoices[0] || null;
+    return App.voice;
+  }
+  App.pickVoice = pickVoice;
+  App.voicePrefs = () => {
+    const p = App.profile && App.profile(), v = (p && p.voice) || {};
+    return { mode: ['recorded', 'device', 'auto'].includes(v.mode) ? v.mode : 'recorded', uri: v.uri || null, speed: v.speed === 'slow' ? 'slow' : 'normal' };
   };
-  App.canSpeak = () => !!App.voice;
-  /** Speak Chinese text. Returns a promise that resolves when done (or immediately if no voice). */
-  App.say = (text, opts) => new Promise(resolve => {
+  App.setVoicePrefs = patch => {
+    const p = App.profile(); if (!p) return;
+    p.voice = Object.assign(App.voicePrefs(), p.voice || {}, patch); App.save(); pickVoice();
+    document.dispatchEvent(new Event('voices'));
+  };
+  App.initVoices = () => {
+    pickVoice();
+    if ('speechSynthesis' in window) speechSynthesis.addEventListener('voiceschanged', () => { pickVoice(); document.dispatchEvent(new Event('voices')); });
+  };
+  /** Load audio/manifest.json (maps Chinese text -> clip file). Resolves either way. */
+  App.initAudio = () => {
+    const ctl = window.AbortController ? new AbortController() : null;
+    const t = setTimeout(() => ctl && ctl.abort(), 6000);
+    return fetch('audio/manifest.json', ctl ? { signal: ctl.signal } : {}).then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then(m => { App.audioInfo = m; App.clips = m.clips || {}; })
+      .catch(e => { console.warn('audio manifest unavailable', e); App.clips = null; })
+      .finally(() => clearTimeout(t));
+  };
+  App.clipFor = text => (App.clips && text ? App.clips[text] || App.clips[String(text).replace(/[。！？，、：；…—“”\s]+$/g, '')] || null : null);
+  App.hasRecordings = () => !!(App.clips && Object.keys(App.clips).length);
+  /** Which engine will actually be used: 'clip' | 'device' | null */
+  App.engine = text => {
+    const m = App.voicePrefs().mode, clip = text === undefined ? App.hasRecordings() : !!App.clipFor(text);
+    if (m === 'device') return App.voice ? 'device' : (clip ? 'clip' : null);
+    if (m === 'auto') return clip ? 'clip' : (App.voice ? 'device' : null);
+    return clip ? 'clip' : null;
+  };
+  App.canSpeak = text => !!App.engine(text);
+  App.deviceVoiceMissing = () => App.voicePrefs().mode === 'device' && !App.voice;
+
+  const player = (App.player = new Audio());
+  player.preload = 'auto';
+  let playToken = 0, curFin = null;
+  App.stopSpeech = () => {
+    playToken++;
+    if (curFin) curFin(null);
+    try { player.pause(); } catch (e) { }
+    if ('speechSynthesis' in window) try { speechSynthesis.cancel(); } catch (e) { }
+  };
+  // iOS/Safari only lets audio start from a tap; "unlock" the shared player on the first touch.
+  let unlocked = false;
+  const unlock = () => {
+    if (unlocked) return; unlocked = true;
+    if (!App.clips) return;
+    try { if (player.paused) { player.src = 'audio/silence.mp3'; player.muted = true; const pr = player.play(); const done = () => { if (/silence\.mp3$/.test(player.src)) { player.pause(); player.muted = false; } }; if (pr) pr.then(done, done); else done(); } } catch (e) { player.muted = false; }
+  };
+  document.addEventListener('pointerdown', unlock, { capture: true, once: true });
+  document.addEventListener('keydown', unlock, { capture: true, once: true });
+
+  function playClip(file, opts) {
+    return new Promise(resolve => {
+      if (curFin) curFin(null);
+      const my = ++playToken;
+      if ('speechSynthesis' in window) try { speechSynthesis.cancel(); } catch (e) { }
+      let done = false;
+      const fin = ok => { if (done) return; done = true; if (curFin === fin) { curFin = null; player.onended = player.onerror = null; } resolve(ok); };
+      curFin = fin;
+      try {
+        player.pause(); player.muted = false;
+        player.src = 'audio/' + file;
+        const slow = opts.slow !== undefined ? opts.slow : App.voicePrefs().speed === 'slow';
+        const rate = slow ? 0.7 : 1;
+        if ('preservesPitch' in player) player.preservesPitch = true; else if ('webkitPreservesPitch' in player) player.webkitPreservesPitch = true;
+        player.defaultPlaybackRate = rate; player.playbackRate = rate;
+        player.onended = () => fin(true);
+        player.onerror = () => fin(false);
+        const pr = player.play();
+        if (pr && pr.catch) pr.catch(err => { if (my === playToken) { console.warn('clip play failed', err && err.name); fin(false); } });
+        setTimeout(() => fin(true), 90000);
+      } catch (e) { fin(false); }
+    });
+  }
+  function speakDevice(text, opts) {
+    return new Promise(resolve => {
+      if (!App.voice) return resolve(false);
+      try {
+        App.stopSpeech();
+        const u = new SpeechSynthesisUtterance(text);
+        const base = opts.rate || App.state.settings.rate || 0.8;
+        u.voice = App.voice; u.lang = App.voice.lang || 'zh-CN'; u.rate = App.voicePrefs().speed === 'slow' ? Math.max(0.4, base * 0.7) : base; u.pitch = opts.pitch || 1;
+        let done = false; const fin = () => { if (!done) { done = true; resolve(true); } };
+        u.onend = fin; u.onerror = fin;
+        setTimeout(fin, 1500 + text.length * 900);
+        speechSynthesis.speak(u);
+      } catch (e) { resolve(false); }
+    });
+  }
+  /** Speak Chinese text. Resolves when done: true = played, false = no audio, null = interrupted by another sound. */
+  App.say = (text, opts) => {
     opts = opts || {};
-    if (!App.voice) { if (!opts.quiet) App.toast('🔇 No Chinese voice on this device. Read the pinyin instead!'); return resolve(false); }
-    try {
-      speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.voice = App.voice; u.lang = App.voice.lang || 'zh-CN'; u.rate = opts.rate || App.state.settings.rate || 0.8; u.pitch = opts.pitch || 1;
-      let done = false; const fin = () => { if (!done) { done = true; resolve(true); } };
-      u.onend = fin; u.onerror = fin;
-      setTimeout(fin, 1500 + text.length * 900);
-      speechSynthesis.speak(u);
-    } catch (e) { resolve(false); }
-  });
+    const eng = App.engine(text);
+    if (eng === 'clip') {
+      const file = App.clipFor(text);
+      return playClip(file, opts).then(ok => {
+        if (ok === false && App.voicePrefs().mode === 'auto' && App.voice) return speakDevice(text, opts);
+        return ok;
+      });
+    }
+    if (eng === 'device') return speakDevice(text, opts);
+    if (App.clips && !App.clipFor(text)) console.warn('no recording for', text);
+    if (!opts.quiet) App.toast(App.voicePrefs().mode === 'recorded' && App.voice ? '🔇 No recording for this one. Try “Auto” in 🔊 voice settings.' : '🔇 No Chinese audio available. Read the pinyin instead!');
+    return Promise.resolve(false);
+  };
   App.speakBtn = (text, label) => '<button class="btn secondary small say" data-say="' + App.esc(text) + '" aria-label="Hear it">🔊 ' + (label || 'Hear it') + '</button>';
   document.addEventListener('click', e => { const b = e.target.closest('[data-say]'); if (b) { e.stopPropagation(); App.say(b.dataset.say); } }, true);
+
+  /** Small voice picker used by the top-bar 🔊 button and the Grown-ups page. */
+  App.voiceControlsHTML = () => {
+    const vp = App.voicePrefs();
+    const modes = App.VOICE_MODES.map(m => '<label class="vopt' + (vp.mode === m.k ? ' on' : '') + '"><input type="radio" name="vmode" value="' + m.k + '"' + (vp.mode === m.k ? ' checked' : '') + '> <b>' + m.name + '</b>' + (m.k === 'recorded' ? ' <small>(default)</small>' : '') + '<br><small class="sub">' + m.desc + '</small></label>').join('');
+    let dev = '';
+    if (App.zhVoices.length > 1) dev = '<label class="row mt">Device voice: <select id="vUri">' + App.zhVoices.map(v => '<option value="' + App.esc(v.voiceURI) + '"' + (App.voice && v.voiceURI === App.voice.voiceURI ? ' selected' : '') + '>' + App.esc(v.name + ' (' + v.lang + (v.localService ? '' : ', online') + ')') + '</option>').join('') + '</select></label>';
+    else if (App.zhVoices.length === 1) dev = '<p class="sub mt">Device voice: <b>' + App.esc(App.voice.name) + '</b> (' + App.esc(App.voice.lang) + (App.voice.localService ? ', on-device' : ', may need internet') + ')</p>';
+    const note = App.deviceVoiceMissing()
+      ? '<p class="banner mt">⚠️ This device has no Chinese text-to-speech voice, so the <b>recorded voice</b> is used instead.' + (App.hasRecordings() ? '' : ' (Recordings could not be loaded either.)') + '</p>'
+      : (!App.hasRecordings() && vp.mode !== 'device' ? '<p class="banner mt">⚠️ The recordings could not be loaded.' + (App.voice ? ' The device voice will be used.' : '') + '</p>' : '');
+    return '<div class="vctl"><div class="vmodes">' + modes + '</div>' + dev + note +
+      '<div class="row mt"><span>Speed:</span><div class="seg" role="group" aria-label="Speech speed"><button data-vspeed="normal" class="' + (vp.speed === 'normal' ? 'on' : '') + '">🐇 Normal</button><button data-vspeed="slow" class="' + (vp.speed === 'slow' ? 'on' : '') + '">🐢 Slow</button></div>' +
+      '<button class="btn secondary small" data-say="你好！我们一起学中文吧！">🔊 Test</button></div></div>';
+  };
+  App.bindVoiceControls = (root, rerender) => {
+    App.$$('input[name=vmode]', root).forEach(r => r.onchange = () => { App.setVoicePrefs({ mode: r.value }); rerender(); });
+    const sel = App.$('#vUri', root); if (sel) sel.onchange = () => { App.setVoicePrefs({ uri: sel.value }); };
+    App.$$('[data-vspeed]', root).forEach(b => b.onclick = () => { App.setVoicePrefs({ speed: b.dataset.vspeed }); rerender(); });
+  };
+  App.openVoicePanel = () => {
+    App.modal('<h2>🔊 Voice</h2><div id="vpanel"></div><div class="center mt"><button class="btn" id="vClose">Done</button></div>', (m, close) => {
+      const draw = () => { App.$('#vpanel', m).innerHTML = App.voiceControlsHTML(); App.bindVoiceControls(m, draw); };
+      draw(); App.$('#vClose', m).onclick = close;
+    });
+  };
 
   /* ---------- recorder (stays on this device) ---------- */
   App.rec = {
